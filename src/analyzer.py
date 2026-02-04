@@ -586,7 +586,7 @@ class GeminiAnalyzer:
         
         # 检查必需配置
         if not config.vertex_ai_project_id or not config.vertex_ai_api_key:
-            logger.debug("Vertex AI 未配置 PROJECT_ID 或 API_KEY，尝试 OpenAI")
+            logger.warn("Vertex AI 未配置 PROJECT_ID 或 API_KEY，尝试 OpenAI")
             self._init_openai_fallback()
             return
         
@@ -598,7 +598,7 @@ class GeminiAnalyzer:
         )
         
         if not vertex_key_valid:
-            logger.debug("Vertex AI API Key 配置无效，尝试 OpenAI")
+            logger.warn("Vertex AI API Key 配置无效，尝试 OpenAI")
             self._init_openai_fallback()
             return
         
