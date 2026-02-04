@@ -1018,7 +1018,12 @@ class GeminiAnalyzer:
             }
 
             # 根据实际使用的 API 显示日志
-            api_provider = "OpenAI" if self._use_openai else "Gemini"
+            if self._use_vertex_ai:
+                api_provider = "Vertex AI"
+            elif self._use_openai:
+                api_provider = "OpenAI"
+            else:
+                api_provider = "Gemini"
             logger.info(f"[LLM调用] 开始调用 {api_provider} API...")
             
             # 使用带重试的 API 调用
