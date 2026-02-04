@@ -501,6 +501,8 @@ class GeminiAnalyzer:
         self._using_fallback = False  # 是否正在使用备选模型
         self._use_openai = False  # 是否使用 OpenAI 兼容 API
         self._openai_client = None  # OpenAI 客户端
+        self._vertex_ai_client = None  # Vertex AI 客户端
+        self._use_vertex_ai = False  # 是否使用 Vertex AI
         
         # 检查 Gemini API Key 是否有效（过滤占位符）
         gemini_key_valid = self._api_key and not self._api_key.startswith('your_') and len(self._api_key) > 10
@@ -510,15 +512,15 @@ class GeminiAnalyzer:
             try:
                 self._init_model()
             except Exception as e:
-                logger.warning(f"Gemini 初始化失败: {e}，尝试 OpenAI 兼容 API")
-                self._init_openai_fallback()
+                logger.warning(f"Gemini 初始化失败: {e}，尝试 Vertex AI")
+                self._init_vertex_ai_fallback()
         else:
-            # Gemini Key 未配置，尝试 OpenAI
-            logger.info("Gemini API Key 未配置，尝试使用 OpenAI 兼容 API")
-            self._init_openai_fallback()
+            # Gemini Key 未配置，尝试 Vertex AI
+            logger.info("Gemini API Key 未配置，尝试使用 Vertex AI")
+            self._init_vertex_ai_fallback()
         
         # 两者都未配置
-        if not self._model and not self._openai_client:
+        if not self._model and not self._vertex_ai_client and not self._openai_client:
             logger.warning("未配置任何 AI API Key，AI 分析功能将不可用")
     
     def _init_openai_fallback(self) -> None:
@@ -573,6 +575,63 @@ class GeminiAnalyzer:
                 logger.error(f"OpenAI 代理配置错误: {e}，如使用 SOCKS 代理请运行: pip install httpx[socks]")
             else:
                 logger.error(f"OpenAI 兼容 API 初始化失败: {e}")
+    
+    def _init_vertex_ai_fallback(self) -> None:
+        """
+        初始化 Vertex AI 作为备选方案
+        
+        使用 API Key 认证方式访问 Vertex AI
+        """
+        config = get_config()
+        
+        # 检查必需配置
+        if not config.vertex_ai_project_id or not config.vertex_ai_api_key:
+            logger.debug("Vertex AI 未配置 PROJECT_ID 或 API_KEY，尝试 OpenAI")
+            self._init_openai_fallback()
+            return
+        
+        # 检查 API Key 是否有效（过滤占位符）
+        vertex_key_valid = (
+            config.vertex_ai_api_key and 
+            not config.vertex_ai_api_key.startswith('your_') and 
+            len(config.vertex_ai_api_key) > 10
+        )
+        
+        if not vertex_key_valid:
+            logger.debug("Vertex AI API Key 配置无效，尝试 OpenAI")
+            self._init_openai_fallback()
+            return
+        
+        try:
+            from vertexai.preview.generative_models import GenerativeModel
+            import vertexai
+            
+            # 使用 API Key 初始化 Vertex AI
+            vertexai.init(
+                project=config.vertex_ai_project_id,
+                location=config.vertex_ai_location,
+                api_key=config.vertex_ai_api_key,
+            )
+            
+            # 创建模型实例
+            self._vertex_ai_client = GenerativeModel(
+                model_name=config.vertex_ai_model,
+                system_instruction=self.SYSTEM_PROMPT,
+            )
+            
+            self._use_vertex_ai = True
+            self._current_model_name = config.vertex_ai_model
+            logger.info(f"Vertex AI 初始化成功 (project: {config.vertex_ai_project_id}, model: {config.vertex_ai_model})")
+            
+        except ImportError:
+            logger.error("未安装 Vertex AI SDK，请运行: pip install google-cloud-aiplatform")
+            logger.info("尝试使用 OpenAI 兼容 API")
+            self._init_openai_fallback()
+        except Exception as e:
+            logger.error(f"Vertex AI 初始化失败: {e}")
+            logger.info("尝试使用 OpenAI 兼容 API")
+            self._init_openai_fallback()
+
     
     def _init_model(self) -> None:
         """
@@ -645,9 +704,60 @@ class GeminiAnalyzer:
             logger.error(f"[LLM] 切换备选模型失败: {e}")
             return False
     
+    def _call_vertex_ai_api(self, prompt: str, generation_config: dict) -> str:
+        """
+        调用 Vertex AI API
+        
+        Args:
+            prompt: 提示词
+            generation_config: 生成配置
+            
+        Returns:
+            响应文本
+        """
+        config = get_config()
+        max_retries = config.gemini_max_retries
+        base_delay = config.gemini_retry_delay
+        
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    delay = min(delay, 60)
+                    logger.info(f"[Vertex AI] 第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
+                    time.sleep(delay)
+                
+                response = self._vertex_ai_client.generate_content(
+                    prompt,
+                    generation_config={
+                        "temperature": generation_config.get('temperature', config.vertex_ai_temperature),
+                        "max_output_tokens": generation_config.get('max_output_tokens', 8192),
+                    }
+                )
+                
+                if response and response.text:
+                    return response.text
+                else:
+                    raise ValueError("Vertex AI 返回空响应")
+                    
+            except Exception as e:
+                error_str = str(e)
+                is_rate_limit = '429' in error_str or 'quota' in error_str.lower() or 'rate' in error_str.lower()
+                
+                if is_rate_limit:
+                    logger.warning(f"[Vertex AI] API 限流，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
+                else:
+                    logger.warning(f"[Vertex AI] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
+                
+                if attempt == max_retries - 1:
+                    raise
+        
+                raise Exception("Vertex AI API 调用失败，已达最大重试次数")
+
+    
     def is_available(self) -> bool:
         """检查分析器是否可用"""
-        return self._model is not None or self._openai_client is not None
+        return self._model is not None or self._vertex_ai_client is not None or self._openai_client is not None
     
     def _call_openai_api(self, prompt: str, generation_config: dict) -> str:
         """
@@ -772,9 +882,39 @@ class GeminiAnalyzer:
                     # 非限流错误，记录并继续重试
                     logger.warning(f"[Gemini] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
         
-        # Gemini 所有重试都失败，尝试 OpenAI 兼容 API
-        if self._openai_client:
-            logger.warning("[Gemini] 所有重试失败，切换到 OpenAI 兼容 API")
+        # Gemini 所有重试都失败，按优先级尝试备选 API：Vertex AI > OpenAI
+        logger.warning("[Gemini] 所有重试失败，尝试备选 API")
+        
+        # 优先尝试 Vertex AI
+        if self._vertex_ai_client:
+            logger.warning("[Gemini] 切换到 Vertex AI")
+            try:
+                return self._call_vertex_ai_api(prompt, generation_config)
+            except Exception as vertex_error:
+                logger.error(f"[Vertex AI] 备选 API 也失败: {vertex_error}")
+                # Vertex AI 失败后尝试 OpenAI
+                if self._openai_client:
+                    logger.warning("[Vertex AI] 切换到 OpenAI 兼容 API")
+                    try:
+                        return self._call_openai_api(prompt, generation_config)
+                    except Exception as openai_error:
+                        logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
+                        raise last_error or openai_error
+                elif config.openai_api_key and config.openai_base_url:
+                    # 尝试懒加载初始化 OpenAI
+                    logger.warning("[Vertex AI] 备选 API 失败，尝试初始化 OpenAI 兼容 API")
+                    self._init_openai_fallback()
+                    if self._openai_client:
+                        try:
+                            return self._call_openai_api(prompt, generation_config)
+                        except Exception as openai_error:
+                            logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
+                            raise last_error or openai_error
+                raise last_error or vertex_error
+        
+        # Vertex AI 不可用，直接尝试 OpenAI
+        elif self._openai_client:
+            logger.warning("[Gemini] 切换到 OpenAI 兼容 API")
             try:
                 return self._call_openai_api(prompt, generation_config)
             except Exception as openai_error:

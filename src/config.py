@@ -63,6 +63,13 @@ class Config:
     openai_model: str = "gpt-4o-mini"  # OpenAI 兼容模型名称
     openai_temperature: float = 0.7  # OpenAI 温度参数（0.0-2.0，默认0.7）
     
+    # Vertex AI 配置（Google Cloud 企业级 AI 平台，备选方案）
+    vertex_ai_project_id: Optional[str] = None  # GCP 项目 ID
+    vertex_ai_location: str = "us-central1"  # 区域位置
+    vertex_ai_model: str = "gemini-3-pro-preview"  # 模型名称
+    vertex_ai_api_key: Optional[str] = None  # Vertex AI API Key
+    vertex_ai_temperature: float = 0.7  # 温度参数（0.0-2.0，默认0.7）
+    
     # === 搜索引擎配置（支持多 Key 负载均衡）===
     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
@@ -330,6 +337,11 @@ class Config:
             openai_base_url=os.getenv('OPENAI_BASE_URL'),
             openai_model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
             openai_temperature=float(os.getenv('OPENAI_TEMPERATURE', '0.7')),
+            vertex_ai_project_id=os.getenv('VERTEX_AI_PROJECT_ID'),
+            vertex_ai_location=os.getenv('VERTEX_AI_LOCATION', 'us-central1'),
+            vertex_ai_model=os.getenv('VERTEX_AI_MODEL', 'google/gemini-3-pro-preview'),
+            vertex_ai_api_key=os.getenv('VERTEX_AI_API_KEY'),
+            vertex_ai_temperature=float(os.getenv('VERTEX_AI_TEMPERATURE', '0.7')),
             bocha_api_keys=bocha_api_keys,
             tavily_api_keys=tavily_api_keys,
             serpapi_keys=serpapi_keys,
